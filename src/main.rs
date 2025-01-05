@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json as AxumJson};
-use axum::routing::{get};
+use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::{query_as, Error, FromRow, PgPool};
@@ -170,7 +170,11 @@ async fn delete_item(
 
 async fn delete_all_items(State(state): State<AppState>) -> impl IntoResponse {
     match state.delete_all_items().await {
-        Ok(deleted_count) => (StatusCode::OK, AxumJson(DeletedItemsResponse { deleted_count })).into_response(),
+        Ok(deleted_count) => (
+            StatusCode::OK,
+            AxumJson(DeletedItemsResponse { deleted_count }),
+        )
+            .into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
