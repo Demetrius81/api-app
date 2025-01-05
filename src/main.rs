@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::Json as AxumJson;
-use axum::routing::{get, post};
+use axum::response::{IntoResponse, Json as AxumJson};
+use axum::routing::{get};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::{query_as, Error, FromRow, PgPool};
@@ -19,6 +19,11 @@ struct Item {
 struct RequestItem {
     name: String,
     description: String,
+}
+
+#[derive(Serialize)]
+struct DeletedItemsResponse {
+    deleted_count: u64,
 }
 
 #[derive(Clone)]
@@ -93,9 +98,18 @@ impl AppState {
         let query = r#"
             DELETE FROM items WHERE id = $1
         "#;
-        let result = sqlx::query(query).execute((&self.db_pool)).await?;
+        let result = sqlx::query(query).bind(id).execute(&self.db_pool).await?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    async fn delete_all_items(&self) -> Result<u64, Error> {
+        let query = r#"
+            DELETE FROM items
+        "#;
+        let result = sqlx::query(query).execute(&self.db_pool).await?;
+
+        Ok(result.rows_affected())
     }
 }
 
@@ -114,6 +128,53 @@ async fn create_item(
     (StatusCode::CREATED, AxumJson(item))
 }
 
+async fn get_items(State(state): State<AppState>) -> impl IntoResponse {
+    AxumJson(state.get_items().await.unwrap())
+}
+
+async fn get_item(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<i32>,
+) -> impl IntoResponse {
+    match state.get_item(id).await.unwrap() {
+        Some(item) => (StatusCode::OK, AxumJson(item)).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn update_item(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<i32>,
+    Json(payload): Json<RequestItem>,
+) -> impl IntoResponse {
+    match state
+        .update_item(id, &payload.name, &payload.description)
+        .await
+    {
+        Ok(Some(item)) => (StatusCode::OK, AxumJson(item)).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn delete_item(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<i32>,
+) -> impl IntoResponse {
+    match state.delete_item(id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn delete_all_items(State(state): State<AppState>) -> impl IntoResponse {
+    match state.delete_all_items().await {
+        Ok(deleted_count) => (StatusCode::OK, AxumJson(DeletedItemsResponse { deleted_count })).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     dotenv::dotenv().ok();
@@ -126,7 +187,14 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(root))
-        .route("/item", post(create_item))
+        .route(
+            "/items",
+            get(get_items).post(create_item).delete(delete_all_items),
+        )
+        .route(
+            "/items/{id}",
+            get(get_item).put(update_item).delete(delete_item),
+        )
         .with_state(AppState { db_pool });
 
     let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
